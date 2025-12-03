@@ -175,7 +175,7 @@ p_ratio
 ```
 
 ### Comment
-1. Bootstrap distribution of $R^2$: the model fits very consistently well, with minimal sampling variability in $R^2%
+1. Bootstrap distribution of $R^2$: the model fits very consistently well, with minimal sampling variability in $R^2$
     - The model explains about 94% of the variance in the response variable across bootstrap samples
     - The tight distribution indicates the model's explanatory power is very stable
     - Even if we refit the model on many resampled datasets, the $R^2$ would remain almost unchanged
@@ -204,3 +204,164 @@ ratio_ci
 
 ```
 
+## Problem 3
+
+```{r}
+birth_raw <- read_csv("./data/birthweight.csv")
+```
+
+```{r}
+birth_df <- birth_raw %>%
+  mutate(
+    babysex = factor(babysex, levels = c(1, 2),
+                     labels = c("male", "female")),
+    frace   = factor(frace),
+    mrace   = factor(mrace),
+    malform = factor(malform, levels = c(0, 1),
+                     labels = c("absent", "present"))
+  ) %>%
+  # drop rows with missing values
+  drop_na()
+```
+
+### Proposed Regression Model for Birthweight
+
+Here I choose a reasonably rich model using clinical/biological predictors:
+
+- Baby's head circumference and length (`bhead`, `blength`)
+- Gestational age in weeks (`gaweeks`)
+- Baby sex (`babysex`)
+- Mother's pre-pregnancy BMI and weight gain (`ppbmi`, `wtgain`)
+- Smoking during pregnancy (`smoken`)
+
+```{r}
+mod_main <- lm(
+  bwt ~ babysex + bhead + blength + gaweeks +
+    ppbmi + wtgain + smoken,
+  data = birth_df
+)
+
+summary(mod_main)
+```
+
+### Residuals vs fitted values
+```{r fig.width = 7, fig.height = 5}
+birth_aug <- birth_df %>%
+  add_predictions(mod_main) %>%
+  add_residuals(mod_main)
+
+birth_aug %>%
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point(alpha = 0.4) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  labs(
+    title = "Residuals vs fitted values: main birthweight model",
+    x = "Fitted birthweight",
+    y = "Residuals"
+  )
+
+```
+
+**Comment**
+
+1. Residual spread increases with fitted birthweight, suggesting heteroscedasticity
+2. The residuals are centered around zero, indicating that the model does not show obvious large-scale bias in prediction across the range of fitted values
+3. Presence of extreme outliers, which likely correspond to biological or measurement anomalies and may strongly influence the fit
+
+### Comparison Models
+
+1. **Model 1**: length at birth + gestational age
+2. **Model 2**: head circumference, length, sex, and all interactions
+
+```{r}
+mod1 <- lm(bwt ~ blength + gaweeks, data = birth_df)
+
+mod2 <- lm(
+  bwt ~ bhead * blength * babysex,
+  data = birth_df
+)
+```
+
+### Cross-validated Prediction Error
+
+```{r}
+set.seed(2025)
+
+cv_df <- crossv_mc(birth_df, n = 100)
+
+cv_results <- cv_df %>%
+  mutate(
+    train = map(train, as_tibble),
+    test  = map(test, as_tibble),
+
+    fit_main = map(train, ~ lm(
+      bwt ~ babysex + bhead + blength + gaweeks +
+        ppbmi + wtgain + smoken,
+      data = .x
+    )),
+    fit_mod1 = map(train, ~ lm(
+      bwt ~ blength + gaweeks,
+      data = .x
+    )),
+    fit_mod2 = map(train, ~ lm(
+      bwt ~ bhead * blength * babysex,
+      data = .x
+    )),
+
+    rmse_main = map2_dbl(fit_main, test, ~ {
+      pred  <- predict(.x, newdata = .y)
+      sqrt(mean((.y$bwt - pred)^2))
+    }),
+    rmse_mod1 = map2_dbl(fit_mod1, test, ~ {
+      pred  <- predict(.x, newdata = .y)
+      sqrt(mean((.y$bwt - pred)^2))
+    }),
+    rmse_mod2 = map2_dbl(fit_mod2, test, ~ {
+      pred  <- predict(.x, newdata = .y)
+      sqrt(mean((.y$bwt - pred)^2))
+    })
+  )
+
+# Summarize and compare
+cv_long <- cv_results %>%
+  select(rmse_main, rmse_mod1, rmse_mod2) %>%
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse"
+  ) %>%
+  mutate(
+    model = recode(
+      model,
+      rmse_main = "Main model",
+      rmse_mod1 = "Model 1",
+      rmse_mod2 = "Model 2"
+    )
+  )
+
+cv_long %>%
+  group_by(model) %>%
+  summarise(
+    mean_rmse = mean(rmse),
+    sd_rmse   = sd(rmse),
+    .groups = "drop"
+  )
+```
+
+```{r fig.width = 10, fig.height = 5}
+cv_long %>%
+  ggplot(aes(x = model, y = rmse)) +
+  geom_boxplot() +
+  labs(
+    title = "Cross-validated RMSE for birthweight models",
+    x = NULL,
+    y = "RMSE on test sets"
+  ) +
+  coord_flip()
+```
+
+**Comment**
+
+1. The main model performs best. The median RMSE for the main model is the lowest among the three, and its RMSE distribution is also tight, suggesting stable performance across folds. This indicates that including multiple predictors improves predictive accuracy.
+2. Model 2 performs similarly to the main model, and its variability is also modest, suggesting that the three-way interaction contributes useful information, but not enoughg to outperform the main model
+3. Model 1 performs the worst and has a much higher median RMSE and the widest spread, suggesting thaht using only two predictors results in substantial information loss
