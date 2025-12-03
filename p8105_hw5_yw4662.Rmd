@@ -1,0 +1,106 @@
+---
+title: "p8105-hw6-yw4662"
+output: github_document
+---
+```{r setup, include = FALSE}
+library(tidyverse)
+library(broom)
+library(modelr)
+library(p8105.datasets)
+
+set.seed(2025)
+theme_set(theme_minimal(base_size = 14))
+```
+
+## Problem 1
+
+```{r, warning = FALSE}
+# Import homicide data from Washington Post GitHub
+homicide_raw <- read_csv(
+  "https://raw.githubusercontent.com/washingtonpost/data-homicides/master/homicide-data.csv"
+)
+
+# Clean and create city_state + solved indicator
+homicide_clean <- homicide_raw %>%
+  mutate(
+    city_state = str_c(city, ", ", state),
+    solved = disposition == "Closed by arrest"
+  )%>%
+  filter(
+    !city_state %in% c("Dallas, TX", "Phoenix, AZ", 
+                      "Kansas City, MO", "Tulsa, AL")
+  ) %>%
+  filter(victim_race %in% c("White", "Black")) %>%
+  mutate(
+    victim_age = as.numeric(victim_age),
+    victim_sex = factor(victim_sex),
+    victim_race = factor(victim_race)
+  )
+
+```
+
+### Baltimore Logistic Regression and Adjusted OR (Male VS Female) 
+
+```{r}
+baltimore_df <- homicide_clean %>%
+  filter(city_state == "Baltimore, MD")
+
+baltimore_fit <- glm(
+  solved ~ victim_age + victim_sex + victim_race,
+  data = baltimore_df,
+  family = binomial()
+)
+
+baltimore_OR <- baltimore_fit %>%
+  tidy(conf.int = TRUE, exponentiate = TRUE) %>%
+  filter(term == "victim_sexMale") %>%
+  select(term, estimate, conf.low, conf.high)
+
+baltimore_OR
+```
+
+### Logistic Regression for Each City and OR (Male VS Female)
+
+```{r}
+city_ORs <- homicide_clean %>%
+  group_by(city_state) %>%
+  nest() %>%
+  mutate(
+    fit = map(
+      data,
+      ~ glm(solved ~ victim_age + victim_sex + victim_race,
+            data = .x,
+            family = binomial())
+    ),
+    tidied = map(
+      fit,
+      ~ tidy(.x, conf.int = TRUE, exponentiate = TRUE)
+    )
+  ) %>%
+  unnest(tidied) %>%
+  filter(term == "victim_sexMale") %>%
+  select(city_state, estimate, conf.low, conf.high)
+
+city_ORs
+```
+
+### Plot of Adjusted ORs by City
+
+```{r fig.width = 10, fig.height = 8}
+city_ORs %>%
+  ggplot(aes(x = estimate, y = fct_reorder(city_state, estimate))) +
+  geom_point(color = "#0057A8") +
+  geom_errorbar(aes(xmin = conf.low, xmax = conf.high), width = 0) +
+  geom_vline(xintercept = 1, linetype = 2) +
+  labs(
+    title = "Adjusted odds ratios for solving homicides (Male vs Female)",
+    x = "Adjusted OR (Male vs Female)",
+    y = NULL
+  )
+```
+
+### Comment
+1. **Most cities have adjusted ORs near 1**: An OR of 1 means that homicides involving male victims and female victims are equally likely to be solved after adjusting for covariates. Most cities fall between 0.7 and 1.3, indicating little to no difference in solve rates by victim sex. 
+
+2. **Cities with very wide confidence intervals**: Some cities have long error bars, indicating smaller sample sizes, high uncertainty in estimates, and limited ability to draw conclusions. 
+
